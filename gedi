@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Aug  7 13:53:46 2022
+
+@author: chris
+"""
+from datetime import datetime
+import argparse
+import json
+import pandas as pd 
+import numpy as np
+import random
+import sys
+import os
+
+
+print("                ________________  ____")
+print("               / ____/ ____/ __ \/  _/")
+print("              / / __/ __/ / / / // /  ")
+print("             / /_/ / /___/ /_/ // /  ") 
+print("             \____/_____/_____/___/")   
+                         
+
+print("              T H E    G E N O M E ")
+print("             D I S A S S E M B L E R")
+
+print("                       .-.")
+print("                      |_:_|")
+print("                     /(_Y_)\\")
+print(".                   ( \\/M\\/ )")
+print(" '.               _.'-/'-'\\-'._")
+print("   ':           _/.--'[[[[]'--.\\_")
+print("     ':        /_'  : |::\"| :  '.\\")
+print("       ':     //   ./ |oUU| \.'  :\\")
+print("         ':  _:'..' \\_|___|_/ :   :|")
+print("           ':.  .'  |_[___]_|  :.':\\")
+print("            [::\\ |  :  | |  :   ; : \\")
+print("             '-'   \\/'.| |.' \  .;.' |")
+print("             |\\_    \\  '-'   :       |")
+print("             |  \\    \\ .:    :   |   |")
+print("             |   \\    | '.   :    \  |")
+print("             /       \\   :. .;       |")
+print("            /     |   |  :__/     :  \\")
+print("           |  |   |    \\:   | \\   |   ||")
+print("          /    \\  : :  |:   /  |__|   /|")
+print("      snd |     : : :_/_|  /'._\\  '--|_\\")
+print("          /___.-/_|-'   \\  \\")
+print("                         '-'")
+print("Software by Christopher Riccardi, Art by Shanaka Dias")
+print()
+
+parser = argparse.ArgumentParser(description='Slice a reference genome into contigs using empirical distributions')
+parser.add_argument('Reference_genome')
+parser.add_argument('-o', '--output', 
+                    nargs='?', 
+                    default=str(datetime.timestamp(datetime.now())),
+                    type=str,
+                    help='Output directory file name. Highly recommended. Default is an ugly timestamp.')
+parser.add_argument('-r', '--random_seed', 
+                    nargs='?', 
+                    default=0, 
+                    type=int, 
+                    help='Random seed for shuffling vectors. 0 = do not shuffle.')
+parser.add_argument('-d', '--downsize',
+                    nargs='?',
+                    default=0.95,
+                    type=float,
+                    help='Rescale reference genome size so that a virtual lower quote is considered. Default is to try using 95%% of the genome.')
+parser.add_argument('-s', '--spacer',
+                    nargs='?',
+                    default=0.02,
+                    type=float,
+                    help='Use at least N%% of the ith chromosome as spacer between artificial contigs. Default is 0.02, or 2%% of the ith contig as spacer.')
+parser.add_argument('-i', '--inversion_rate',
+                    nargs='?',
+                    default=0.4,
+                    type=float,
+                    help='Rate of inversions per artificial assembly produced. Default is 0.4, i.e., invert 40%% of the contigs produced.')
+
+parser.add_argument('-m', '--min',
+                    nargs='?',
+                    default=500,
+                    type=int,
+                    help='Minimum required contig size. Default is 500 nucleotides.')
+
+args = parser.parse_args()
+RANDOM = args.random_seed
+DOWNSIZE = args.downsize
+RESIDUE = args.spacer
+INVERSIONS = args.inversion_rate
+MIN_CONTIG_LENGTH = args.min
+
+print(f"These are your input parameters: {json.dumps(vars(args), sort_keys=True, indent=4)}")
+
+### Functions
+
+def splitAutoDelimiter(string):
+    ## priority order:
+    ## space
+    ## semicolon
+    ## pipe
+    ## tab
+    if len(string) > 8192:
+        return -1
+    space = string.find(' ')
+    if space:
+        return string[1:space]
+    semicolon = string.find(';')
+    if semicolon:
+        return string[1:semicolon]
+    pipe = string.find('|')
+    if pipe:
+        return string[1:pipe]
+    tab = string.find('\t')
+    if tab:
+        return string[1:tab]
+    return string[1:].rstrip()
+
+def loadFASTA(file):
+    FASTA = {}
+    FASTA['size'] = []
+    FASTA['seqid'] = []
+    FASTA['sequence'] = []
+    index_list = []
+    
+    begin = True
+    sequence = ""
+    size = 0
+    with open(file, "r") as f:
+        print("Loading FASTA sequence")
+        for line in f:
+            if line.startswith(">") and begin:
+                begin = False
+                name = splitAutoDelimiter(line)
+                if not name:
+                    print("[ERROR] There was a problem boading FASTA sequence")
+                    return -1
+                continue
+            elif not line.startswith(">"):
+                buffer = line.rstrip()
+                sequence += buffer
+                size += len(buffer)
+            if line.startswith(">") and not begin:
+                
+                FASTA['seqid'].append(name)
+                FASTA['sequence'].append(sequence)
+                FASTA['size'].append(size)
+                sequence = ""
+                size = 0
+                name = splitAutoDelimiter(line)
+                if not name:
+                    print("[ERROR] There was a problem loading FASTA sequence")
+                    return -1
+        ## append last
+        FASTA['seqid'].append(name)
+        FASTA['size'].append(size)
+        FASTA['sequence'].append(sequence)
+    
+    sortd = sorted(FASTA['size'], reverse=False) ## default
+    for elem in sortd:
+        index_list.append(FASTA['size'].index(elem))
+        
+    print("[OK] Loaded FASTA sequence")
+
+    return pd.DataFrame(FASTA).loc[index_list].reset_index(drop=True)
+
+def loadDataset(file):
+    print("Loading dataset")
+    dataset_file = open(file, "r")
+    try:
+        data = json.load(dataset_file)
+    except:
+         print("[ERROR] There was a problem loading dataset JSON file")
+         return -1
+    print("[OK] Loaded dataset")
+    return pd.DataFrame(data['references'])
+
+def shuffle_vector(vector):
+    if RANDOM != 0:
+        random.Random(RANDOM).shuffle(vector)
+
+def calcRatios(vector, total_size):
+    return np.array(vector) / total_size * 100
+
+def pad_zeros(V1, V2):
+    vec1 = np.array(V1)
+    vec2 = np.array(V2)
+    if vec1.size < vec2.size:
+        vec1 = np.pad(vec1, (vec2.size - vec1.size, 0), 'constant')
+    elif vec2.size < vec1.size:
+        vec2 = np.pad(vec2, (vec1.size - vec2.size, 0), 'constant')
+    return vec1, vec2
+
+def reverse_complement(seq):
+    complement = {'A': 'T', 'C': 'G', 
+                  'G': 'C', 'T': 'A',
+                  'a': 't', 'c': 'g', 
+                  'g': 'c', 't': 'a'}
+    revcomp = "".join(complement.get(base, base) for base in reversed(seq))
+    return revcomp
+
+def calcDistance(vec1, vec2):
+    return sum(abs(vec1 - vec2))
+    
+def printStatistics(reference, best_result):
+    best_result_accession = best_result['reference_accession']
+    best_result_superkingdom = best_result['superkingdom']
+    best_result_num_chromosomes = best_result['num_chromosomes']
+    best_result_tot_size = sum(best_result['lengths'])
+    #best_result_ratios = best_result['ratios'].reverse()[:6]
+    best_result_ratios = [round(x, 2) for x in best_result['ratios'][::-1][:6]]
+    best_result_num_assemblies = best_result['num_assemblies']
+    
+    reference_num_chromosomes = len(reference['size'])
+    reference_tot_size = sum(reference['size'])
+    #reference_ratios = calcRatios(reference['size'], reference_tot_size).reverse()[:6]
+    reference_ratios = [round(x, 2) for x in calcRatios(reference['size'], reference_tot_size)[::-1][:6]]
+    
+    print("Summarized Statistics")
+    print("")
+    print("Reference Summary")
+    print(f"reference_num_chromosomes: {reference_num_chromosomes}")
+    print(f"reference_tot_size: {reference_tot_size:,}")
+    print(f"reference_ratios (first 6 are shown): {reference_ratios}")
+    print("")
+    print("Best Hit Summary")
+    print(f"best_result_accession: {best_result_accession} https://www.ncbi.nlm.nih.gov/assembly/{best_result_accession}/")
+    print(f"best_result_superkingdom: {best_result_superkingdom}")
+    print(f"best_result_num_chromosomes: {best_result_num_chromosomes}")
+    print(f"best_result_tot_size: {best_result_tot_size:,}")
+    print(f"best_result_ratios (first 6 are shown): {best_result_ratios}")
+    print(f"best_result_num_assemblies: {best_result_num_assemblies}")
+    print("")
+    print("End of Summary")
+    
+def searchDataset(reference, dataset):
+    print("Searching dataset, please wait")
+    ratios = calcRatios(reference['size'], sum(reference['size']))
+    num_entries = dataset.shape[0]
+    print(f"Number of dataset entries: {num_entries}", file=sys.stdout)
+    distances = []
+    for i in dataset.index:
+        vec1, vec2 = pad_zeros(ratios, dataset.loc[i]['ratios']) ## make them of comparable size
+        dist = calcDistance(vec1, vec2)
+        if dist == 0:
+            ## exact match, say 100% and 100% or identity
+            print("[OK] Match found")
+            return dataset.loc[i]
+        distances.append(calcDistance(vec1, vec2))
+    print(f"[OK] Returning minimum distance ({min(distances):.2f})")
+    return dataset.loc[distances.index(min(distances))]
+
+def findOptimalPath(reference, best_result):
+    ## Rows: chromosome sizes
+    ## Cols: fractions to be emulated
+    
+    reference_size = sum(reference['size']) 
+    
+    ## Don't use 100% of genome (allows more spacing between contigs)
+    reference_size *= DOWNSIZE
+    
+    ## Reverse the arrays and store them into numpy arrays
+    #rows = np.array(reference['size'][::-1])
+    rows = np.array(reference['size'])
+    
+    ## Now shuffle rows according to user-specified random seed
+    shuffle_vector(rows)
+    
+    residues = rows * RESIDUE
+    #cols = np.array(best_result['ratios'][::-1])
+    cols = np.array(best_result['ratios'])
+    cols = cols / 100
+
+    M = np.zeros((rows.size, cols.size))
+    i = 0
+    j = 0
+
+    while j < cols.size:
+        if i == rows.size:
+            i = 0
+            j += 1
+            if j == cols.size:
+                break
+        subtracted = int(cols[j] * reference_size)
+        if subtracted < MIN_CONTIG_LENGTH:
+            j += 1
+            continue
+        remaining = rows[i] - subtracted
+        if remaining < residues[i]:
+            i += 1
+        else:
+            rows[i] = remaining
+            M[i][j] = subtracted
+            j += 1
+            i = 0
+            
+    ## Insert original row values at index 1 of the Matrix
+    #rows = np.array(reference['size'][::-1])
+    rows = np.array(reference['size'])
+    ## Reshuffle, just like before
+    shuffle_vector(rows)
+    return np.insert(M, 0, rows, axis=1)
+
+def findRanges(M):
+    range_data = {'contig':[], 'chromosome':[], 'size':[], 'start':[], 'end':[], 'orientation':[]}
+    basename = 'contig_'
+    general_counter = 0
+    
+    counter = np.arange(0, M.shape[0], 1)
+    shuffle_vector(counter)
+    for i in range(M.shape[0]):
+        subtracted = sum(M[i][1:])
+        if subtracted == 0:
+            continue
+        unused_nucleotides = M[i][0] - subtracted ## Extra nucleotides to use as spacer between contigs
+        ## how many contigs will the ith chromosome provide?
+        num_contigs = M[i][1:][M[i][1:]>0,].size
+        equal_spacing = int(unused_nucleotides / num_contigs)
+        
+        ### Structure is like this
+        # contig_name  chromosome  size  start  end  orientation
+        
+        appended_size = 0
+        for elem in M[i][1:][M[i][1:]>0,]:
+            general_counter += 1
+            appended_size += equal_spacing
+            range_data['contig'].append(basename + str(general_counter))
+            range_data['chromosome'].append(counter[i])
+            range_data['size'].append(elem)
+            range_data['start'].append(appended_size)
+            range_data['end'].append(appended_size + elem)
+            range_data['orientation'].append(0)
+            appended_size += elem
+           
+    ## Cast types
+    range_data['size'] = list(map(int, range_data['size']))
+    range_data['start'] = list(map(int, range_data['start']))
+    range_data['end'] = list(map(int, range_data['end']))
+    
+    ## Calculate num of contigs produced
+    num_produced = len(range_data['orientation'])
+    
+    ## Calculate how many it needs to invert
+    num_inverted = int(num_produced * INVERSIONS)
+    
+    ## Change the first num_inverted from 0 to 1
+    for i in range(num_inverted):
+        range_data['orientation'][i] = 1
+        
+    ## Now shuffle according to user-specified random seed
+    random.Random(RANDOM).shuffle(range_data['orientation'])
+    return range_data
+
+def update_indices(df, reference):
+    #reshuf = np.arange(0, reference['size'].size, 1)
+    #shuffle_vector(reshuf)
+    #reference = reference.set_index([reshuf])
+    df = df.astype({'chromosome': str})
+    for v in list(df.index.values): 
+        n = df.at[v, 'chromosome']
+        #print(f"v:{v}, n:{df.at[v, 'chromosome']}, chr:{reference['seqid'].values[n]}")
+        df.at[v, 'chromosome'] = reference['seqid'].values[int(n)]
+        #df.loc[v].at['chromosome'] = reference['seqid'].values[n]
+    return df
+
+def write_json_string(path, output):
+    filename = 'template_info.json'
+    filename = os.path.join(path, filename)
+    f = open(filename, "w")
+    f.write(json.dumps(output, indent=4, sort_keys=False))
+    f.close()
+
+def write_csv(df, reference, path):
+    filename = 'oracle.csv'
+    filename = os.path.join(path, filename)
+    df.to_csv(filename, sep='\t', index=False)
+
+def write_sequence(df, reference, path):
+    delim = ' ' ## space
+    formatting = 80
+    bytes = 0
+    filename = 'artificial_assembly.fna'
+    filename = os.path.join(path, filename)
+    with open(filename, 'w') as f:
+        for i in list(df.index.values):
+            seqid = df['chromosome'][i]
+            #j = list(reference['seqid']).index(seqid)
+            j = reference.index[reference['seqid'] == seqid][0]
+
+            start = df['start'][i]
+            end = df['end'][i]
+            header = '>' + df['contig'][i] + delim + df['chromosome'][i] + delim + str(df['size'][i]) + delim + str(df['start'][i]) + delim + str(df['end'][i]) + delim + str(df['orientation'][i]) + '\n'
+            
+            bytes += f.write(header)
+            
+            sequence = reference['sequence'][j] [start:end]
+
+            ## Expensive part of the program
+            if df['orientation'][i] == 1:
+                sequence = reverse_complement(reference['sequence'][j] [start:end])
+                
+            k = 0
+            while (k + formatting) < df['size'][i]:
+                bytes += f.write(sequence[k:k+formatting])
+                bytes += f.write('\n')
+                k += formatting
+    return bytes
+
+def CreateDirectory(path):
+    try:
+        os.mkdir(path)
+    except:
+        print("[ERROR] Path exists or you do not have the right privileges for writing")
+        sys.exit(1)
+    cwd = os.getcwd()
+    absolute_path = os.path.abspath(path)
+    return absolute_path
+    
+## Procedural Programming
+path = CreateDirectory(args.output)
+reference = loadFASTA(args.Reference_genome)
+dataset = loadDataset("dataset.json")
+best_result = searchDataset(reference, dataset)
+printStatistics(reference, best_result)
+
+print("Writing nested directories and populating output\n")
+for i in range(best_result['num_assemblies']):
+    ## Create nested directories
+    nested_dir = 'artificial_assembly_' + str(i+1)
+    nested_path = os.path.join(path, nested_dir)
+    os.mkdir(nested_path)
+    
+    ## Calc optimal artificial contigs distributions
+    M = findOptimalPath(reference, best_result['assemblies'][i])
+    range_data = findRanges(M)
+    
+    ## Convert to pandas dataframe
+    df = pd.DataFrame(range_data)
+    
+    ## Make some minor adjustments 
+    df = update_indices(df, reference)
+    
+    ## Write oracle
+    print("Writing CSV oracle file")
+    write_csv(df, reference, nested_path)
+    print("[OK] Oracle file written")
+
+    ## Write template_info
+    print("Writing template info to JSON file")
+    write_json_string(nested_path, best_result['assemblies'][i])
+    print("[OK] Template info file written")
+    
+    ## Write FASTA
+    print(f"Writing artificial assembly based on real assembly https://www.ncbi.nlm.nih.gov/assembly/{best_result['assemblies'][i]['assembly_accession']}/")
+    bytes = write_sequence(df, reference, nested_path)
+    print(f"[OK] Written {bytes:,} bytes")
+
+    ## Print
+    print()
+
+print("Execution  Terminated.  Thank  You  For  Using  G E D I.")
