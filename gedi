@@ -71,7 +71,7 @@ parser.add_argument('-s', '--spacer',
                     nargs='?',
                     default=0.02,
                     type=float,
-                    help='Use at least N%% of the ith chromosome as spacer between artificial contigs. Default is 0.02, or 2%% of the ith contig as spacer.')
+                    help='Use at least N fraction of the ith chromosome as spacer between artificial contigs. Default is 0.02, or 2%% of the ith contig as spacer.')
 parser.add_argument('-i', '--inversion_rate',
                     nargs='?',
                     default=0.4,
@@ -405,6 +405,9 @@ def write_sequence(df, reference, path):
                 bytes += f.write(sequence[k:k+formatting])
                 bytes += f.write('\n')
                 k += formatting
+            bytes += f.write(sequence[k:k+formatting])
+            bytes += f.write('\n')
+            k += formatting
     return bytes
 
 def CreateDirectory(path):
