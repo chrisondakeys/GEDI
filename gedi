@@ -260,15 +260,12 @@ def findOptimalPath(reference, best_result):
     ## Don't use 100% of genome (allows more spacing between contigs)
     reference_size *= DOWNSIZE
     
-    ## Reverse the arrays and store them into numpy arrays
-    #rows = np.array(reference['size'][::-1])
     rows = np.array(reference['size'])
     
     ## Now shuffle rows according to user-specified random seed
     shuffle_vector(rows)
     
     residues = rows * RESIDUE
-    #cols = np.array(best_result['ratios'][::-1])
     cols = np.array(best_result['ratios'])
     cols = cols / 100
 
@@ -287,7 +284,7 @@ def findOptimalPath(reference, best_result):
             j += 1
             continue
         remaining = rows[i] - subtracted
-        if remaining < residues[i]:
+        if remaining <= residues[i]:
             i += 1
         else:
             rows[i] = remaining
@@ -296,7 +293,6 @@ def findOptimalPath(reference, best_result):
             i = 0
             
     ## Insert original row values at index 1 of the Matrix
-    #rows = np.array(reference['size'][::-1])
     rows = np.array(reference['size'])
     ## Reshuffle, just like before
     shuffle_vector(rows)
